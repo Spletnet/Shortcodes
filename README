@@ -1,3 +1,9 @@
 Shortcode module for Drupal 7.x 
 
 [code][/code] style text filter.
+
+This module is for them developers only.
+
+Usage:
+
+Shortcode::add_shortcode(shortcode_name_string, shortcode_hook);
