@@ -1,0 +1,8 @@
+name = Shortcode
+description = Allow the use of shortcodes in your posts.
+package = "Input filters"
+core = 7.x
+version = "7.x-0.1"
+; Files:
+files[] = shortcode.module
+files[] = Shortcode.php

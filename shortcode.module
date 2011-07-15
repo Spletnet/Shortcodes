@@ -1,0 +1,439 @@
+<?php
+
+/**
+ * hook_filter_info();
+ * 
+ * @return type 
+ */
+function shortcode_filter_info() {
+    register_shortcodes();
+    $filters['filter_html'] = array(
+        'title' => t('Shortcode'),
+        'description' => t('Replace shortcode with html.'),
+        'process callback' => '_shortcode_process',
+        //'postprocess callback' => '_shortcode_postprocess_text',
+        'settings callback' => '_shortcode_settings_form',
+            //'tips callback' => '_filter_html_tips',
+    );
+    return $filters;
+}
+/**
+ * Settings callback function from hook_filter_info();
+ * 
+ * @param type $form
+ * @param type $form_state
+ * @param type $filter
+ * @param type $format
+ * @param type $defaults
+ * @param type $filters
+ * @return type 
+ */
+function _shortcode_settings_form($form, &$form_state, $filter, $format, $defaults, $filters) {
+    $el = array();
+    $el['shortcodes_settings'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('Shortcodes'),
+        '#collapsible' => TRUE,
+    );
+
+    $shortcodes = Shortcode::getShortcodes();
+
+    foreach ($shortcodes as $name => $item) {
+        $n = 'shortcode_enabled_' . $name . '_in_';
+        $el['shortcodes_settings'][$n] = array(
+            '#type' => 'checkbox',
+            '#title' => t('Enable %name shortcode', array('%name' => $name)),
+            '#default_value' => variable_get($n, 1),
+            '#description' => 'Enable or disable this shortcode in this input format',
+        );
+    }
+    return $el;
+}
+
+/**
+ * Process callback function from hook_filter_info();
+ * 
+ * @param type $text
+ * @param type $filter
+ * @param type $format
+ * @param type $langcode
+ * @param type $cache
+ * @param type $cache_id 
+ */
+function _shortcode_process($text, $filter, $format, $langcode, $cache, $cache_id) {
+    $shortcodes = Shortcode::getShortcodes();
+    //$enabled_names = array();
+    //if (!$enabled_names) {
+        //return $text;
+    //}
+    // save the shortcodes
+    //_shortcode_tags($shortcodes);
+    // imroved version - recursive processing - embed tags within tags supported!
+    $chunks = preg_split('!(\[.*?\])!', $text, -1, PREG_SPLIT_DELIM_CAPTURE);
+    $heap = array();
+    $heap_index = array();
+
+    foreach ($chunks as $c) {
+        if (!$c) {
+            continue;
+        }
+        // shortcode or not
+        if (($c[0] == '[') && (substr($c, -1, 1) == ']')) {
+            // $c contains shortcode
+            // self-closing tag or not
+            $c = substr($c, 1, -1);
+            //dpr('process: ' . $c);
+
+            if (substr($c, -1, 1) == '/') {
+                // process a self closing tag - it has / at the end!
+                //dpr('self closing: ' . $c);
+                /*
+                 * 0 - the full tag text?
+                 * 1/5 - An extra [ or ] to allow for escaping shortcodes with double [[]]
+                 * 2 - The shortcode name
+                 * 3 - The shortcode argument list
+                 * 4 - The content of a shortcode when it wraps some content.
+                 * */
+                $ts = explode(' ', trim($c));
+                $tag = array_shift($ts);
+
+                $m = array(
+                    $c,
+                    '',
+                    $tag,
+                    implode(' ', $ts),
+                    NULL,
+                    ''
+                );
+                array_unshift($heap_index, '_string_');
+                array_unshift($heap, _shortcode_process_tag($m));
+            } elseif ($c[0] == '/') {
+                // closing tag - process the heap
+                $closing_tag = substr($c, 1);
+                //dpr('closing tag: ' . $closing_tag );
+
+                $process_heap = array();
+                $process_heap_index = array();
+                $found = FALSE;
+
+                // get elements from heap and process
+                do {
+                    $tag = array_shift($heap_index);
+                    $heap_text = array_shift($heap);
+
+                    if ($closing_tag == $tag) {
+                        // process the whole tag
+                        $m = array(
+                            $tag . ' ' . $heap_text,
+                            '',
+                            $tag,
+                            $heap_text,
+                            implode('', $process_heap),
+                            ''
+                        );
+                        $str = _shortcode_process_tag($m);
+                        //dpr($str);
+                        array_unshift($heap_index, '_string_');
+                        array_unshift($heap, $str);
+                        $found = TRUE;
+                    } else {
+                        array_unshift($process_heap, $heap_text);
+                        array_unshift($process_heap_index, $tag);
+                    }
+                } while (!$found && $heap);
+
+                if (!$found) {
+
+                    foreach ($process_heap as $val) {
+                        array_unshift($heap, $val);
+                    }
+                    foreach ($process_heap_index as $val) {
+                        array_unshift($heap_index, $val);
+                    }
+                    //array_unshift($heap_index, '_string_');
+                    //array_unshift($heap, 'notfound: ' . $closing_tag . ':' . implode('', $process_heap));
+                }
+            } else {
+                // starting tag. put to the heap
+                //dpr('tag pattern: ' . $c);
+                $ts = explode(' ', trim($c));
+                $tag = array_shift($ts);
+
+                // dpr('start tag: ' . $tag);
+                array_unshift($heap_index, $tag);
+                array_unshift($heap, implode(' ', $ts));
+            }
+        } else {
+            // not found a pair?
+            array_unshift($heap_index, '_string_');
+            array_unshift($heap, $c);
+        }
+    }
+    //$b = implode('', array_reverse($heap));
+    $text = implode('', array_reverse($heap));
+    return $text;
+}
+
+/*
+ * Html corrector for wysiwyg editors
+ *
+ * Correncting p elements around the divs. No div are allowed in p so remove them.
+ *
+ */
+
+function _shortcode_postprocess_text($text) {
+    //return $text;
+    $patterns = array(
+        '|#!#|is',
+        '!<p>(&nbsp;|\s)*(<\/*div>)!is',
+        '!<p>(&nbsp;|\s)*(<div)!is',
+        '!(<\/div.*?>)\s*</p>!is',
+        '!(<div.*?>)\s*</p>!is',
+    );
+
+    /*
+     *
+     */
+    //$replacements = array('!!\\2', '###\\2', '@@@\\1');
+    $replacements = array('', '\\2', '\\2', '\\1', '\\1');
+    return preg_replace($patterns, $replacements, $text);
+}
+
+/**
+ * Regular Expression callable for do_shortcode() for calling shortcode hook.
+ * @see get_shortcode_regex for details of the match array contents.
+ *
+ * @since 2.5
+ * @access private
+ * @uses $shortcode_tags
+ *
+ * @param array $m Regular expression match array
+ * @return mixed False on failure.
+ */
+function _shortcode_process_tag($m) {
+    $shortcodes = Shortcode::getShortcodes();
+
+    // allow [[foo]] syntax for escaping a tag
+    if ($m[1] == '[' && $m[5] == ']') {
+        return substr($m[0], 1, -1);
+    }
+
+    $tag = $m[2];
+
+    if (TRUE){//$shortcodes[$tag]->enabled) {
+        //dpr('_shortcode_process_tag: ' . $tag);
+        // tag exists (enabled)
+        $attr = _shortcode_parse_attrs($m[3]);
+        //dpr($attr);
+        /*
+         * 0 - the full tag text?
+         * 1/5 - An extra [ or ] to allow for escaping shortcodes with double [[]]
+         * 2 - The shortcode name
+         * 3 - The shortcode argument list
+         * 4 - The content of a shortcode when it wraps some content.
+         * */
+        if(!isset($shortcodes[$tag]))
+            return '';
+        if (!is_null($m[4])) {
+            //dpr('fv: ' . $shortcodes[$tag]->function);
+            // enclosing tag - extra parameter
+            return $m[1] . call_user_func($shortcodes[$tag]->function, $attr, $m[4], $m[2]) . $m[5];
+        } else {
+            // self-closing tag
+            //dpr('fv self closing: ' . $shortcodes[$tag]->function);
+            return $m[1] . call_user_func($shortcodes[$tag]->function, $attr, NULL, $m[2]) . $m[5];
+        }
+    } elseif (is_null($m[4])) {
+        return $m[4];
+    }
+    return '';
+}
+
+// _shortcode_process_tag()
+
+/**
+ * Retrieve all attributes from the shortcodes tag.
+ *
+ * The attributes list has the attribute name as the key and the value of the
+ * attribute as the value in the key/value pair. This allows for easier
+ * retrieval of the attributes, since all attributes have to be known.
+ *
+ * @since 2.5
+ *
+ * @param string $text
+ * @return array List of attributes and their value.
+ */
+function _shortcode_parse_attrs($text) {
+    $atts = array();
+    $pattern = '/(\w+)\s*=\s*"([^"]*)"(?:\s|$)|(\w+)\s*=\s*\'([^\']*)\'(?:\s|$)|(\w+)\s*=\s*([^\s\'"]+)(?:\s|$)|"([^"]*)"(?:\s|$)|(\S+)(?:\s|$)/';
+    $text = preg_replace("/[\x{00a0}\x{200b}]+/u", " ", $text);
+    if (preg_match_all($pattern, $text, $match, PREG_SET_ORDER)) {
+        foreach ($match as $m) {
+            if (!empty($m[1]))
+                $atts[strtolower($m[1])] = stripcslashes($m[2]);
+            elseif (!empty($m[3]))
+                $atts[strtolower($m[3])] = stripcslashes($m[4]);
+            elseif (!empty($m[5]))
+                $atts[strtolower($m[5])] = stripcslashes($m[6]);
+            elseif (isset($m[7]) and strlen($m[7]))
+                $atts[] = stripcslashes($m[7]);
+            elseif (isset($m[8]))
+                $atts[] = stripcslashes($m[8]);
+        }
+    }
+    else {
+        $atts = ltrim($text);
+    }
+    return $atts;
+}
+
+// _shortcode_parse_attrs
+
+/**
+ * Retrieve the shortcode regular expression for searching.
+ *
+ * The regular expression combines the shortcode tags in the regular expression
+ * in a regex class.
+ *
+ * The regular expresion contains 6 different sub matches to help with parsing.
+ *
+ * 1/6 - An extra [ or ] to allow for escaping shortcodes with double [[]]
+ * 2 - The shortcode name
+ * 3 - The shortcode argument list
+ * 4 - The self closing /
+ * 5 - The content of a shortcode when it wraps some content.
+ *
+ * @return string The shortcode search regular expression
+ */
+function _shortcode_get_shortcode_regex($names) {
+    $tagregexp = join('|', array_map('preg_quote', $names));
+
+    // WARNING! Do not change this regex without changing do_shortcode_tag() and strip_shortcodes()
+    return '(.?)\[(' . $tagregexp . ')\b(.*?)(?:(\/))?\](?:(.+?)\[\/\2\])?(.?)';
+}
+
+/**
+ * Combine user attributes with known attributes and fill in defaults when needed.
+ *
+ * The pairs should be considered to be all of the attributes which are
+ * supported by the caller and given as a list. The returned attributes will
+ * only contain the attributes in the $pairs list.
+ *
+ * If the $atts list has unsupported attributes, then they will be ignored and
+ * removed from the final returned list.
+ *
+ * @since 2.5
+ *
+ * @param array $pairs Entire list of supported attributes and their defaults.
+ * @param array $atts User defined attributes in shortcode tag.
+ * @return array Combined and filtered attribute list.
+ */
+function shortcode_attrs($pairs, $atts) {
+    $atts = (array) $atts;
+    $out = array();
+    foreach ($pairs as $name => $default) {
+        if (array_key_exists($name, $atts))
+            $out[$name] = $atts[$name];
+        else
+            $out[$name] = $default;
+    }
+    return $out;
+}
+
+/**
+ * Helper function to decide the give param bool value
+ * @param mixed $var
+ *
+ * @return bool
+ */
+function shortcode_bool($var) {
+    switch (strtolower($var)) {
+        case false:
+        case 'false':
+        case 'no':
+        case '0':
+            $res = FALSE;
+            break;
+        default:
+            $res = TRUE;
+            break;
+    }
+
+    return $res;
+}
+
+/**
+ * Class parameter helper function
+ * @param $class
+ * @param $default
+ */
+function shortcode_add_class($class='', $default='') {
+    if ($class) {
+        if (!is_array($class)) {
+            $class = explode(' ', $class);
+        }
+        array_unshift($class, $default);
+        $class = array_unique($class);
+    } else {
+        $class[] = $default;
+    }
+    return implode(' ', $class);
+}
+
+//shortcode_add_class
+// shortcode implementations
+
+/**
+ * Generates a random code
+ *
+ * Calling
+ * [random length=X /]
+ *
+ * Where X is the length of the random text.
+ * If the length empty or invalid, between 1-99, the length will be 8
+ *
+ */
+function shortcode_shortcode_random($attrs, $text) {
+    extract(shortcode_attrs(array(
+                'length' => 8,
+                    ), $attrs));
+
+    $length = intval($length);
+    if (($length < 0) || ($length > 99)) {
+        $length = 8;
+    }
+
+    $text = '';
+    for ($i = 0; $i < $length; ++$i) {
+        $text .= chr(rand(32, 126));
+    }
+
+    return $text;
+}
+
+/**
+ * Provides a random tag tip
+ *
+ * @param $format
+ * @param $long
+ */
+function shortcode_shortcode_random_tip($format, $long) {
+    $output = '';
+    if (shortcode_shortcode_is_enabled('random', $format)) {
+        $output = '<p><strong>[random (length=X) /]</strong>';
+        if ($long) {
+            $output .= ' insert a random text with length between 0-99 or if length omitted, 8.</p>';
+        } else {
+            $output .= ' inserts a random text with max length 99. Default length is 8.</p>';
+        }
+    }
+
+    return $output;
+}
+/**
+ * do_shortcode -> dummy method for compatibility with WordPress
+ * @param $text
+ */
+function do_shortcode($text){
+    return $text;
+}
